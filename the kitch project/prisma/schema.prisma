@@ -1,0 +1,27 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model MenuSection {
+  id        String     @id @default(cuid())
+  title     String
+  items     MenuItem[]
+  published Boolean    @default(false)
+}
+
+model MenuItem {
+  id          String   @id @default(cuid())
+  sectionId   String
+  name        String
+  description String?
+  priceCents  Int?
+  currency    String   @default("MAD")
+  tags        String[]
+  published   Boolean  @default(false)
+  section     MenuSection @relation(fields: [sectionId], references: [id])
+}
