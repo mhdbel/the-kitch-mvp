@@ -46,7 +46,7 @@ the-kitch-mvp/
 
 ### 1. Clone & Install
 ```bash
-git clone https://github.com/your-username/the-kitch-mvp.git
+git clone https://github.com/mhdbel/the-kitch-mvp.git
 cd the-kitch-mvp
 npm install
 
