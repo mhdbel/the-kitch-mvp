@@ -1,68 +1,131 @@
 import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
+import { db, collections } from '@/lib/firebase';
+import { collection, getDocs, addDoc, serverTimestamp } from 'firebase/firestore';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-const SYSTEM_PROMPT = `Tu es KitchBot, l'assistant IA du restaurant The Kitch à **Rabat, près de Hassan Tower**.
-Tu es chaleureux, serviable et connais parfaitement le menu et la région de Rabat.
+// Get current menu for context
+async function getMenuContext() {
+  try {
+    const querySnapshot = await getDocs(collection(db, collections.menu));
+    const menuItems = querySnapshot.docs.map(doc => doc.data());
+    
+    // Format menu for AI context
+    const formattedMenu = menuItems
+      .filter((item: any) => item.available)
+      .map((item: any) => 
+        `• ${item.name} (${item.price} DH): ${item.description} [Tags: ${item.tags.join(', ')}]`
+      )
+      .join('\n');
+    
+    return formattedMenu;
+  } catch (error) {
+    console.error('Error fetching menu:', error);
+    return 'Menu non disponible';
+  }
+}
 
-**CONTEXTE RABAT SPÉCIFIQUE:**
-- Le restaurant est situé à Rabat, près de Hassan Tower et de l'avenue Mohammed V
-- Zone de livraison: Tout Rabat (Agdal, Hay Riad, Hassan, Salé centre)
-- Parking disponible à proximité
-- Zone d'affaires fréquentée par des professionnels
-- Beaucoup de clients des ambassades et ministères voisins
+const SYSTEM_PROMPT = `Tu es KitchBot, l'assistant IA intelligent du restaurant The Kitch à Rabat.
+Tu es chaleureux, serviable, et expert en cuisine marocaine moderne.
 
-**CARACTÉRISTIQUES UNIQUES DE RABAT:**
-1. **Livraison rapide**: 30-45 min dans tout Rabat
-2. **Menus d'affaires**: Formules déjeuner pour professionnels
-3. **Événements d'entreprise**: Organisation de séminaires et réunions
-4. **Service traiteur**: Pour les ambassades et institutions
+CONTEXTE SPÉCIFIQUE RABAT:
+• Le restaurant est situé Avenue Mohammed V, Rabat (près de Hassan Tower)
+• Zone de livraison: Rabat centre, Hassan, Agdal, Hay Riad, Salé centre
+• Horaires: 12h-23h tous les jours
+• Spécialités: Cuisine marocaine fusion, plats santé, options végétariennes
+• Services: Livraison express, réservations, événements d'entreprise
 
-**RÈGLES DE COMMUNICATION:**
-1. Réponds dans la langue du client (français, anglais, arabe marocain)
-2. Pour les professionnels, propose les "formules déjeuner d'affaires"
-3. Mentionne les points de repère de Rabat pour l'orientation
-4. Pour les commandes groupées (bureaux), propose une réduction
-5. Les plats doivent être décrits avec des références culinaires marocaines modernes
+TON RÔLE:
+1. Tu aides les clients à choisir des plats basés sur leurs préférences
+2. Tu réponds aux questions sur les livraisons à Rabat
+3. Tu guides pour les réservations et commandes groupées
+4. Tu es multilingue: français, anglais, arabe (réponds dans la langue du client)
 
-**INFORMATIONS PRATIQUES RABAT:**
-- Adresse: Avenue Mohammed V, Rabat (près de Hassan Tower)
-- Téléphone: +212 5XX XXX XXX
-- Zone de livraison: Rabat, Salé, Temara
-- Service de réservation pour groupes (séminaires, réunions)
+RÈGLES IMPORTANTES:
+• Sois concis mais informatif
+• Propose toujours des alternatives si un plat n'est pas disponible
+• Pour les commandes, guide vers WhatsApp ou le site
+• Pour les réservations, propose le formulaire en ligne
+• Mentionne les promotions en cours si pertinentes
 
 MENU ACTUEL:
-{menu_content}`;
+{MENU_CONTENT}
+
+FORMULES PROFESSIONNELLES:
+• Formule Déjeuner Pro: 120 DH (plat + boisson + dessert)
+• Formule Équipe (4+): 450 DH (4 plats + boissons + desserts)
+
+COMMENCE TOUJOURS TA RÉPONSE PAR UNE SALUTATION AMICALE.`;
 
 export async function POST(request: NextRequest) {
   try {
-    const { message, conversationHistory, menuContent } = await request.json();
+    const { message, conversationId, language = 'fr' } = await request.json();
     
-    const prompt = SYSTEM_PROMPT.replace('{menu_content}', menuContent || 'Menu non disponible');
-    
+    // Get current menu for context
+    const menuContent = await getMenuContext();
+    const prompt = SYSTEM_PROMPT.replace('{MENU_CONTENT}', menuContent);
+
+    // Log conversation
+    const conversationData = {
+      message,
+      timestamp: serverTimestamp(),
+      language,
+      source: 'web',
+    };
+
+    await addDoc(collection(db, collections.chatbotConversations), conversationData);
+
+    // Generate AI response
     const response = await openai.chat.completions.create({
       model: "gpt-3.5-turbo",
       messages: [
         { role: "system", content: prompt },
-        ...conversationHistory,
         { role: "user", content: message }
       ],
       temperature: 0.7,
-      max_tokens: 150,
+      max_tokens: 200,
+    });
+
+    const aiResponse = response.choices[0].message.content;
+
+    // Log AI response
+    await addDoc(collection(db, collections.chatbotConversations), {
+      ...conversationData,
+      message: aiResponse,
+      isAI: true,
     });
 
     return NextResponse.json({
-      reply: response.choices[0].message.content,
-      timestamp: new Date().toISOString()
+      reply: aiResponse,
+      timestamp: new Date().toISOString(),
+      conversationId,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Chat API error:', error);
-    return NextResponse.json(
-      { error: 'Erreur du serveur IA' },
-      { status: 500 }
-    );
+    
+    // Fallback response
+    const fallbackResponses = {
+      fr: "Désolé, je rencontre des difficultés techniques. Veuillez réessayer ou nous contacter directement au +212 661 234 567.",
+      en: "Sorry, I'm experiencing technical difficulties. Please try again or contact us directly at +212 661 234 567.",
+      ar: "عذرًا، أواجه صعوبات تقنية. يرجى المحاولة مرة أخرى أو الاتصال بنا مباشرة على 212 661 234 567."
+    };
+
+    return NextResponse.json({
+      reply: fallbackResponses[language as keyof typeof fallbackResponses] || fallbackResponses.fr,
+      timestamp: new Date().toISOString(),
+      error: error.message,
+    });
   }
+}
+
+export async function GET() {
+  return NextResponse.json({
+    status: 'online',
+    service: 'The Kitch Rabat AI Chatbot',
+    version: '1.0',
+    languages: ['fr', 'en', 'ar'],
+  });
 }
