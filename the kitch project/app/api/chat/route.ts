@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
 import { logChatbotInteraction } from '@/lib/firebase-helpers';
+import { collection, getDocs } from 'firebase/firestore';
+import { db } from '@/lib/firebase';
+import { defaultMenuItems } from '@/lib/menuDefaults';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const openaiApiKey = process.env.OPENAI_API_KEY;
+const openai = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
 
 const SYSTEM_PROMPT = `Tu es KitchBot, l'assistant IA premium du restaurant The Kitch à Rabat.
 Tu es situé à Rabat, près de Hassan Tower sur l'avenue Mohammed V.
@@ -37,45 +39,67 @@ RÈGLES DE RÉPONSE:
 4. Pour les commandes, oriente vers WhatsApp
 5. Pour les réservations, propose le formulaire en ligne
 6. Mentionne toujours la localisation Rabat
-7. Pour les entreprises, propose les formules pro`;
+7. Pour les entreprises, propose les formules pro
+8. Si un plat n'est pas dans le menu, dis clairement qu'il n'est pas disponible
+9. N'invente pas de prix ni d'ingrédients`;
+
+const formatMenu = (items: Array<{ name: string; price: number; category: string; description?: string }>) => {
+  const byCategory: Record<string, Array<{ name: string; price: number; description?: string }>> = {};
+  items.forEach((item) => {
+    byCategory[item.category] = byCategory[item.category] || [];
+    byCategory[item.category].push(item);
+  });
+  return Object.entries(byCategory)
+    .map(([category, items]) => {
+      const lines = items.map((item) => `- ${item.name} (${item.price} DH): ${item.description ?? ''}`.trim());
+      return `${category.toUpperCase()}:\n${lines.join('\n')}`;
+    })
+    .join('\n\n');
+};
 
 export async function POST(request: NextRequest) {
   try {
     const { message, conversationHistory = [], sessionId, language = 'fr' } = await request.json();
-    
-    // Simple menu content (in production, fetch from Firebase)
-    const menuContent = `
-    ENTREES:
-    - Salade The Kitch (85 DH): Mix de salades, noix, vinaigrette maison
-    - Brick au thon (65 DH): Brick légère au thon et coriandre
-    - Soupe Harira (45 DH): Traditionnelle avec lentilles et pois chiches
-    
-    PLATS PRINCIPAUX:
-    - Tajine Poulet Citron (145 DH): Poulet mijoté avec citron confit et olives
-    - Couscous Royal (165 DH): Viandes multiples, légumes de saison
-    - Pastilla au Poulet (155 DH): Feuilleté sucré-salé, amandes, cannelle
-    - Brochette d'Agneau (175 DH): Agneau mariné, servi avec légumes grillés
-    - Burger Marocain (135 DH): Viande d'agneau, fromage, épices marocaines
-    
-    DESSERTS:
-    - Briouates aux Amandes (65 DH): Feuilleté aux amandes et miel
-    - Mille-feuille Pistache (75 DH): Pâte feuilletée, crème pistache
-    - Salade de Fruits Frais (55 DH): Fruits de saison, menthe fraîche
-    
-    BOISSONS:
-    - Thé à la Menthe (35 DH): Thé vert, menthe fraîche, sucre
-    - Jus d'Orange Pressé (40 DH): Oranges pressées à la minute
-    - Café Arabica (30 DH): Café torréfié localement
-    
-    FORMULES PRO (Rabat entreprises):
-    - Formule Déjeuner: 120 DH (plat + boisson + dessert)
-    - Formule Équipe: 450 DH pour 4 personnes
-    `;
+    let menuItems = defaultMenuItems.map((item) => ({
+      name: item.name,
+      price: item.price,
+      category: item.category,
+      description: item.description
+    }));
+    try {
+      const menuSnapshot = await getDocs(collection(db, 'menu'));
+      if (!menuSnapshot.empty) {
+        menuItems = menuSnapshot.docs.map((doc) => ({
+          name: doc.data().name ?? 'Plat',
+          price: doc.data().price ?? 0,
+          category: doc.data().category ?? 'plats',
+          description: doc.data().description ?? ''
+        }));
+      }
+    } catch (error) {
+      console.error('Menu fetch error:', error);
+    }
+
+    const menuContent = formatMenu(menuItems);
+
+    if (!openai) {
+      const offlineReplies = {
+        fr: "Le service IA est momentanément indisponible. Vous pouvez commander via WhatsApp ou consulter le menu sur place.",
+        en: "The AI service is temporarily unavailable. You can order via WhatsApp or check the menu on site.",
+        ar: "خدمة الذكاء الاصطناعي غير متاحة مؤقتًا. يمكنك الطلب عبر واتساب أو الاطلاع على القائمة في المطعم."
+      };
+      return NextResponse.json({
+        reply: offlineReplies[language as keyof typeof offlineReplies] || offlineReplies.fr,
+        timestamp: new Date().toISOString(),
+        sessionId: sessionId || `session_${Date.now()}`,
+        error: true
+      });
+    }
 
     const finalPrompt = SYSTEM_PROMPT.replace('{menu_content}', menuContent);
 
     const response = await openai.chat.completions.create({
-      model: "gpt-4",
+      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
       messages: [
         { role: "system", content: finalPrompt },
         ...conversationHistory.slice(-6), // Last 6 messages for context
@@ -87,7 +111,7 @@ export async function POST(request: NextRequest) {
       frequency_penalty: 0.2,
     });
 
-    const aiReply = response.choices[0].message.content;
+    const aiReply = response.choices[0].message.content || '';
 
     // Log the interaction for analytics
     await logChatbotInteraction({
@@ -115,7 +139,7 @@ export async function POST(request: NextRequest) {
     };
 
     return NextResponse.json({
-      reply: fallbackResponses.fr,
+      reply: fallbackResponses[language as keyof typeof fallbackResponses] || fallbackResponses.fr,
       timestamp: new Date().toISOString(),
       error: true
     });
