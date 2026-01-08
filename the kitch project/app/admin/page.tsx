@@ -6,7 +6,7 @@ import { signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'firebas
 import { auth } from '@/lib/firebase';
 import MenuEditor from '@/components/admin/MenuEditor';
 import AnalyticsDashboard from '@/components/admin/AnalyticsDashboard';
-import RabatAdminFeatures from '@/components/admin/RabatAdminFeatures';
+import RabatFeatures from '@/components/admin/RabatFeatures';
 import OrdersManager from '@/components/admin/OrdersManager';
 import AIContentGenerator from '@/components/admin/AIContentGenerator';
 import { 
@@ -213,7 +213,7 @@ export default function AdminPage() {
           {activeTab === 'menu' && <MenuEditor />}
           {activeTab === 'orders' && <OrdersManager />}
           {activeTab === 'analytics' && <AnalyticsDashboard detailed />}
-          {activeTab === 'rabat' && <RabatAdminFeatures />}
+          {activeTab === 'rabat' && <RabatFeatures />}
           {activeTab === 'ai' && <AIContentGenerator />}
           {activeTab === 'settings' && (
             <div>
